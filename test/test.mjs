@@ -1,0 +1,75 @@
+// dsh-convo-cost host logic tests: fold a simulated session event stream
+// through the convoCost projection and assert token accounting + pricing.
+// No network, no real model calls.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { apply, name } from '../lib/index.js'
+
+/** Register the projection against a stub context and return the definition. */
+function registerProjection() {
+  let def = null
+  const ctx = { sessionProjections: { register: (d) => { def = d; return () => {} } } }
+  apply(ctx)
+  assert.ok(def !== null, 'projection should be registered')
+  return def
+}
+
+test('plugin exports', () => {
+  assert.equal(name, 'dsh-convo-cost')
+})
+
+test('projection folds usage events into totals and cost', () => {
+  const def = registerProjection()
+  assert.equal(def.key, 'convoCost')
+
+  let s = def.init()
+  s = def.apply(s, { type: 'request/header', data: { header: { config: { model: 'deepseek-v4-flash' } } } })
+  s = def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-16T10:00:00+08:00'), data: { usage: { inputTokens: 8113, outputTokens: 336, cacheReadTokens: 384, reasoningTokens: 147 } } })
+  s = def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-16T15:00:00+08:00'), data: { usage: { inputTokens: 5000, outputTokens: 200, cacheReadTokens: 1000, reasoningTokens: 90 } } })
+  // non-usage events are no-ops
+  s = def.apply(s, { type: 'step/start', data: {} })
+
+  const view = def.view(s)
+  assert.equal(view.calls, 2)
+  assert.equal(view.inputTokens, 13113)
+  assert.equal(view.cacheReadTokens, 1384)
+  assert.equal(view.outputTokens, 536)
+  assert.equal(view.reasoningTokens, 237)
+  assert.equal(view.model, 'deepseek-v4-flash')
+  // base regime (before 2026-08-17): CNY per 1M tokens
+  // call1: (384*0.02 + 8113*1.0 + 336*2.0)/1e6 = 0.00879268
+  // call2: (1000*0.02 + 5000*1.0 + 200*2.0)/1e6 = 0.00542
+  assert.ok(Math.abs(view.costCny - 0.01421268) < 1e-9, `costCny=${view.costCny}`)
+  assert.equal(view.period, 'base')
+
+  // view output must satisfy the projection schema
+  const check = def.schema.safeParse(view)
+  assert.ok(check.success, `schema: ${JSON.stringify(check.error)}`)
+})
+
+test('peak/valley pricing applies after the effective date', () => {
+  const def = registerProjection()
+  let s = def.init()
+  s = def.apply(s, { type: 'request/header', data: { header: { config: { model: 'deepseek-v4-flash' } } } })
+  // After 2026-08-17 00:00 +08:00; 08:00 Beijing is OFF-PEAK
+  s = def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-18T08:00:00+08:00'), data: { usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 100, reasoningTokens: 0 } } })
+  const view = def.view(s)
+  assert.equal(view.period, 'peakValley')
+  // offPeak: (100*0.05 + 1000*1.5 + 100*4.5)/1e6 = (5 + 1500 + 450)/1e6 = 0.001955
+  assert.ok(Math.abs(view.costCny - 0.001955) < 1e-9, `costCny=${view.costCny}`)
+
+  // Peak hours: Beijing 14:00-18:00
+  s = def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-18T15:00:00+08:00'), data: { usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 100, reasoningTokens: 0 } } })
+  const view2 = def.view(s)
+  // peak: (100*0.1 + 1000*3.0 + 100*9.0)/1e6 = (10 + 3000 + 900)/1e6 = 0.00391
+  assert.ok(Math.abs(view2.costCny - (0.001955 + 0.00391)) < 1e-9, `costCny=${view2.costCny}`)
+})
+
+test('unknown models cost zero', () => {
+  const def = registerProjection()
+  let s = def.init()
+  s = def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-16T10:00:00+08:00'), data: { usage: { inputTokens: 100, outputTokens: 100, cacheReadTokens: 0, reasoningTokens: 0 } } })
+  const view = def.view(s)
+  assert.equal(view.costCny, 0)
+  assert.equal(view.calls, 1)
+})

@@ -1,0 +1,4 @@
+# dsh-convo-cost bundle patch: inserts this plugin into a profile's layer stack.
+- insert:
+    - id: dsh-convo-cost
+      name: 'dsh-convo-cost'
