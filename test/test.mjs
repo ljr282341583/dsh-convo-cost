@@ -73,3 +73,50 @@ test('unknown models cost zero', () => {
   assert.equal(view.costCny, 0)
   assert.equal(view.calls, 1)
 })
+
+/** Float-safe assertion for CNY figures (unit prices are decimal literals). */
+function near(actual, expected, epsilon = 1e-9) {
+  assert.ok(Math.abs(actual - expected) < epsilon, `expected ${actual} ≈ ${expected}`)
+}
+
+test('peak-hour boundaries follow the Beijing peak windows', () => {
+  const def = registerProjection()
+  const run = (time) => {
+    let s = def.init()
+    s = def.apply(s, { type: 'request/header', data: { header: { config: { model: 'deepseek-v4-flash' } } } })
+    return def.view(def.apply(s, { type: 'assistant/message', time, data: { usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 100, reasoningTokens: 0 } } }))
+  }
+  // After the 2026-08-17 effective date, Beijing peak hours are 09:00-12:00 and 14:00-18:00.
+  const offPeakUnit = 0.001955 // (100*0.05 + 1000*1.5 + 100*4.5) / 1e6
+  const peakUnit = 0.00391 // (100*0.1 + 1000*3.0 + 100*9.0) / 1e6
+  near(run(Date.parse('2026-08-18T09:00:00+08:00')).costCny, peakUnit) // 09:00 -> peak
+  near(run(Date.parse('2026-08-18T11:59:00+08:00')).costCny, peakUnit) // before 12:00 -> peak
+  near(run(Date.parse('2026-08-18T12:00:00+08:00')).costCny, offPeakUnit) // 12:00 -> off-peak
+  near(run(Date.parse('2026-08-18T14:00:00+08:00')).costCny, peakUnit) // 14:00 -> peak
+  near(run(Date.parse('2026-08-18T18:00:00+08:00')).costCny, offPeakUnit) // 18:00 -> off-peak
+})
+
+test('model mapping picks the right price bucket', () => {
+  const def = registerProjection()
+  const run = (model) => {
+    let s = def.init()
+    s = def.apply(s, { type: 'request/header', data: { header: { config: { model } } } })
+    return def.view(def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-16T10:00:00+08:00'), data: { usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 } } }))
+  }
+  // Base regime: 1M cache-miss input tokens priced per the official table.
+  near(run('deepseek-v4-flash').costCny, 1.0) // 1M * 1.0 CNY/M
+  near(run('deepseek-v4-pro').costCny, 3.0) // 1M * 3.0 CNY/M
+  near(run('some-custom-model').costCny, 0) // unknown -> ¥0
+  assert.equal(run('deepseek-v4-flash').model, 'deepseek-v4-flash')
+})
+
+test('cache-write tokens are accounted separately', () => {
+  const def = registerProjection()
+  let s = def.init()
+  s = def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-16T10:00:00+08:00'), data: { usage: { inputTokens: 100, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 42, reasoningTokens: 0 } } })
+  const view = def.view(s)
+  assert.equal(view.cacheWriteTokens, 42)
+  assert.equal(view.calls, 1)
+  const check = def.schema.safeParse(view)
+  assert.ok(check.success, `schema: ${JSON.stringify(check.error)}`)
+})
