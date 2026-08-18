@@ -1,5 +1,7 @@
 # dsh-convo-cost
 
+> English: [README.en.md](README.en.md)
+
 实时统计**当前对话**的 token 用量与费用，在会话输入框下方的状态行显示一行
 `本对话 ¥x.xx · xx tok`，悬停可看调用次数 / 输入（含缓存命中）/ 输出（含推理）/
 费用 / 计价模式 / 模型明细。
@@ -52,6 +54,16 @@ npm test
 ```
 
 用模拟事件流验证投影的 token 累计与计费（无网络、无真实调用）。
+
+## 常见问题
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 状态行不出现 | 安装后需重启 `dsh web`；确认插件已进入 `dsh.profile.bundles`（`dsh plugin add` 会自动 reconcile） |
+| 一直显示 ¥0.00 | 模型不在官方价目表内（未知模型按 ¥0 计）；等待首次 `assistant/message` 事件产生 usage |
+| 金额与账单不一致 | 价格为估算：按请求头模型名与官方价目表计算，不含折扣/活动/平台加价；以官方账单为准 |
+| 官方调价后想立即生效 | 修改 `lib/index.js` 的 `PRICING` 表与 `EFFECTIVE_AT`，重新发布 npm 包并更新 |
+| 悬停明细为空 | 投影需累积至少一次带 usage 的 `assistant/message` 事件；新会话从 0 开始 |
 
 ## License
 
