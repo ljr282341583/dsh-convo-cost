@@ -52,6 +52,16 @@ npm test
 The projection's token accounting and billing are verified with a simulated event stream (no network, no real
 calls).
 
+## FAQ
+
+| Symptom | Cause / fix |
+| --- | --- |
+| Status line missing | Restart `dsh web` after install; confirm the plugin joined `dsh.profile.bundles` (`dsh plugin add` reconciles it automatically) |
+| Always shows ¥0.00 | The model is not in the official price table (unknown models bill at ¥0); wait for the first `assistant/message` event carrying usage |
+| Amount differs from the bill | Estimate only: priced from the request-header model name and the official table, excluding discounts/promotions/platform markup; the official bill is authoritative |
+| Prices changed officially | Update the `PRICING` table and `EFFECTIVE_AT` in `lib/index.js`, then republish the npm package and update |
+| Hover details empty | The projection needs at least one `assistant/message` event with usage; new sessions start from 0 |
+
 ## License
 
 MIT
