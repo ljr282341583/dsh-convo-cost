@@ -1,6 +1,6 @@
 {
   "name": "dsh-convo-cost",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Real-time cost tracking for the current DSH conversation: a composer-dock line showing the running token usage and DeepSeek official price estimate (base and peak/valley pricing).",
   "type": "module",
   "main": "lib/index.js",

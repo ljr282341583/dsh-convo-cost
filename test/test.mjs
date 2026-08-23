@@ -18,6 +18,23 @@ test('plugin exports', () => {
   assert.equal(name, 'dsh-convo-cost')
 })
 
+test('projection definition satisfies the host client-visible contract', () => {
+  const def = registerProjection()
+  // The DSH host (@deepseek-ai/dsh-session-projection register()) only serves
+  // a unit to the browser when it carries `stateSchema` and a `wire` block.
+  // 1.0.0 registered `schema`/`view` at the top level instead, which made the
+  // unit host-only — the dock line never received any value.
+  assert.ok(def.stateSchema !== undefined, 'stateSchema must be present')
+  assert.ok(def.wire !== undefined, 'wire must be present')
+  assert.ok(def.wire.viewSchema !== undefined, 'wire.viewSchema must be present')
+  assert.equal(typeof def.wire.view, 'function', 'wire.view must be a function')
+
+  // The persisted fold state carries the internal `_time` field; the view does not.
+  const state = def.init()
+  assert.equal(def.stateSchema.safeParse({ ...state, _time: Date.now() }).success, true)
+  assert.equal(def.wire.viewSchema.safeParse(def.wire.view(state)).success, true)
+})
+
 test('projection folds usage events into totals and cost', () => {
   const def = registerProjection()
   assert.equal(def.key, 'convoCost')
@@ -29,7 +46,7 @@ test('projection folds usage events into totals and cost', () => {
   // non-usage events are no-ops
   s = def.apply(s, { type: 'step/start', data: {} })
 
-  const view = def.view(s)
+  const view = def.wire.view(s)
   assert.equal(view.calls, 2)
   assert.equal(view.inputTokens, 13113)
   assert.equal(view.cacheReadTokens, 1384)
@@ -43,7 +60,7 @@ test('projection folds usage events into totals and cost', () => {
   assert.equal(view.period, 'base')
 
   // view output must satisfy the projection schema
-  const check = def.schema.safeParse(view)
+  const check = def.wire.viewSchema.safeParse(view)
   assert.ok(check.success, `schema: ${JSON.stringify(check.error)}`)
 })
 
@@ -53,14 +70,14 @@ test('peak/valley pricing applies after the effective date', () => {
   s = def.apply(s, { type: 'request/header', data: { header: { config: { model: 'deepseek-v4-flash' } } } })
   // After 2026-08-17 00:00 +08:00; 08:00 Beijing is OFF-PEAK
   s = def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-18T08:00:00+08:00'), data: { usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 100, reasoningTokens: 0 } } })
-  const view = def.view(s)
+  const view = def.wire.view(s)
   assert.equal(view.period, 'peakValley')
   // offPeak: (100*0.05 + 1000*1.5 + 100*4.5)/1e6 = (5 + 1500 + 450)/1e6 = 0.001955
   assert.ok(Math.abs(view.costCny - 0.001955) < 1e-9, `costCny=${view.costCny}`)
 
   // Peak hours: Beijing 14:00-18:00
   s = def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-18T15:00:00+08:00'), data: { usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 100, reasoningTokens: 0 } } })
-  const view2 = def.view(s)
+  const view2 = def.wire.view(s)
   // peak: (100*0.1 + 1000*3.0 + 100*9.0)/1e6 = (10 + 3000 + 900)/1e6 = 0.00391
   assert.ok(Math.abs(view2.costCny - (0.001955 + 0.00391)) < 1e-9, `costCny=${view2.costCny}`)
 })
@@ -69,7 +86,7 @@ test('unknown models cost zero', () => {
   const def = registerProjection()
   let s = def.init()
   s = def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-16T10:00:00+08:00'), data: { usage: { inputTokens: 100, outputTokens: 100, cacheReadTokens: 0, reasoningTokens: 0 } } })
-  const view = def.view(s)
+  const view = def.wire.view(s)
   assert.equal(view.costCny, 0)
   assert.equal(view.calls, 1)
 })
@@ -84,7 +101,7 @@ test('peak-hour boundaries follow the Beijing peak windows', () => {
   const run = (time) => {
     let s = def.init()
     s = def.apply(s, { type: 'request/header', data: { header: { config: { model: 'deepseek-v4-flash' } } } })
-    return def.view(def.apply(s, { type: 'assistant/message', time, data: { usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 100, reasoningTokens: 0 } } }))
+    return def.wire.view(def.apply(s, { type: 'assistant/message', time, data: { usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 100, reasoningTokens: 0 } } }))
   }
   // After the 2026-08-17 effective date, Beijing peak hours are 09:00-12:00 and 14:00-18:00.
   const offPeakUnit = 0.001955 // (100*0.05 + 1000*1.5 + 100*4.5) / 1e6
@@ -101,7 +118,7 @@ test('model mapping picks the right price bucket', () => {
   const run = (model) => {
     let s = def.init()
     s = def.apply(s, { type: 'request/header', data: { header: { config: { model } } } })
-    return def.view(def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-16T10:00:00+08:00'), data: { usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 } } }))
+    return def.wire.view(def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-16T10:00:00+08:00'), data: { usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 } } }))
   }
   // Base regime: 1M cache-miss input tokens priced per the official table.
   near(run('deepseek-v4-flash').costCny, 1.0) // 1M * 1.0 CNY/M
@@ -114,9 +131,9 @@ test('cache-write tokens are accounted separately', () => {
   const def = registerProjection()
   let s = def.init()
   s = def.apply(s, { type: 'assistant/message', time: Date.parse('2026-08-16T10:00:00+08:00'), data: { usage: { inputTokens: 100, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 42, reasoningTokens: 0 } } })
-  const view = def.view(s)
+  const view = def.wire.view(s)
   assert.equal(view.cacheWriteTokens, 42)
   assert.equal(view.calls, 1)
-  const check = def.schema.safeParse(view)
+  const check = def.wire.viewSchema.safeParse(view)
   assert.ok(check.success, `schema: ${JSON.stringify(check.error)}`)
 })
